@@ -4,18 +4,9 @@ function check_file(){
         ([ ! -z $1 ] && [ -e $1 ] && return 0) || return 1
 }
 
-function check_process() {
-        (pgrep -q $1 && echo $1 ) || return 1
-}
-
 function err() {
         echo $@
         exit 1
-}
-
-function ok() {
-         echo $@
-         exit 0
 }
 
 function ask() {
@@ -126,7 +117,7 @@ function setup_docker_subnets(){
         do
                 echo "Adding route for $subnet via $gw"
                 sudo route add $subnet $gw
-        echo
+                echo
         done
 }
 
