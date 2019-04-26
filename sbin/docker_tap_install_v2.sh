@@ -4,7 +4,7 @@ set -o nounset
 set -o errexit
 
 # Folder where this install script resides
-SCRIPT_DIR=$(cd $(dirname ${BASH_SOURCE}) && pwd)
+SCRIPT_DIR=${PWD##*/}
 
 # Potential names the docker daemon process could have
 POSSIBLE_PROCESS_NAMES=$(echo '
@@ -23,41 +23,51 @@ if [ ! -f "$shimPath" ]; then
 	exit 1
 fi
 
-# Find docker hyperkit binary file
-hyperkitPath=false
-for possibleLocation in $(echo '
+locations=$(echo '
 	/Applications/Docker.app/Contents/MacOS/com.docker.hyperkit
 	/Applications/Docker.app/Contents/Resources/bin/com.docker.hyperkit
 	/Applications/Docker.app/Contents/Resources/bin/hyperkit
-'); do
-	if [ -f "$possibleLocation" ]; then
-		hyperkitPath=$possibleLocation
-		break;
-    elif [ -f "$HOME$possibleLocation" ]; then
-		hyperkitPath=$HOME$possibleLocation
-		break;
-	fi
-done
+')
 
-if [ "$hyperkitPath" = false ]; then
+function find_hyperkit(){
+
+  for loc in $locations;
+  do
+    if [ -f $loc]
+    then
+        echo $loc
+        break;
+    elif [ -f "$HOME$loc"];
+    then
+        echo "$HOME$loc"
+        break;
+    fi
+  done
+  echo
+}
+
+hyperkit_path=$(find_hyperkit)
+
+if [ -z "$hyperkit_path" ]; then
 	echo 'Could not find hyperkit executable' >&2
 	exit 1
 fi
 
+function find_process() {
+  for loc in $locations;
+  do
+    if pgrep -q $loc;
+        echo $loc
+    fi
+  done
+}
+
 # Take note of the docker daemon process
 # NOTE: in some instances docker will automatically restart
 # after the below step, so we take note of it a bit earlier
-processID=false
-processName=false
-for possibleName in $POSSIBLE_PROCESS_NAMES; do
-	if pgrep -q $possibleName; then
-		processID=$(pgrep $possibleName)
-		processName=$possibleName
-		break;
-	fi
-done
 
-if [ "$processName" = false ]; then
+hyperkit_process=$(find_process)
+if [ -z "$hyperkit_process" ]; then
 	echo 'Could not find hyperkit process to kill, make sure docker is running' >&2
 	exit 1;
 fi
