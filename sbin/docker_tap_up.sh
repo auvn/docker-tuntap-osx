@@ -20,3 +20,13 @@ sudo chown $USER /dev/$local_tap_interface
 # Startup local and host tuntap interfaces
 sudo ifconfig $local_tap_interface $local_gateway up
 docker run --rm --privileged --net=host --pid=host alpine ifconfig $host_tap_interface $host_gateway netmask $host_netmask up
+
+# Routes for the existing docker networks
+subnets=$(docker network inspect -f "{{range .IPAM.Config}}{{.Subnet}}{{end}}" $(docker network ls -f driver=bridge -q))
+
+for subnet in $subnets
+do
+  echo "Adding route for $subnet via $hostGateway"
+  sudo route add $subnet $hostGateway
+  echo
+done
