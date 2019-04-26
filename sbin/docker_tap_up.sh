@@ -26,7 +26,7 @@ subnets=$(docker network inspect -f "{{range .IPAM.Config}}{{.Subnet}}{{end}}" $
 
 for subnet in $subnets
 do
-  echo "Adding route for $subnet via $hostGateway"
-  sudo route add $subnet $hostGateway
+  echo "Adding route for $subnet via $host_gateway"
+  sudo route add $subnet $host_gateway
   echo
 done
