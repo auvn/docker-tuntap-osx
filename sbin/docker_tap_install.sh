@@ -1,117 +1,141 @@
-#!/bin/bash
+#!/bin/sh
 
-set -o nounset
-set -o errexit
+function check_file(){
+        ([ ! -z $1 ] && [ -e $1 ] && return 0) || return 1
+}
+
+function check_process() {
+        (pgrep -q $1 && echo $1 ) || return 1
+}
+
+function err() {
+        echo $@
+        exit 1
+}
+
+function ok() {
+         echo $@
+         exit 0
+}
+
+function ask() {
+        local msg=$1
+        shift
+        local cmd=$@
+        echo $msg
+        echo " Type \"yes\" and press enter to continue"
+        read code
+        if [ "$code" = 'yes' ];
+        then
+                $@
+        fi
+        echo Skipping.
+}
 
 # Folder where this install script resides
-SCRIPT_DIR=$(cd $(dirname ${BASH_SOURCE}) && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-# Potential names the docker daemon process could have
-POSSIBLE_PROCESS_NAMES=$(echo '
-	com.docker.hyperkit
-	hyperkit.original
-')
+TAP_ID="tap1"
+TAP_IFACE="/dev/$TAP_ID"
+SHIM_FILE="$SCRIPT_DIR/docker.hyperkit.tuntap.sh"
 
-# Make sure tap interface we will bind to hyperkit VM is owned by us
-tapintf=tap1
-sudo chown $USER /dev/tap1
+LOCATIONS=( \
+        "/Applications/Docker.app/Contents/MacOS/com.docker.hyperkit" \
+        "/Applications/Docker.app/Contents/Resources/bin/com.docker.hyperkit" \
+        "/Applications/Docker.app/Contents/Resources/bin/hyperkit")
 
-# Make sure shim script we will install exists
-shimPath="${SCRIPT_DIR}/docker.hyperkit.tuntap.sh"
-if [ ! -f "$shimPath" ]; then
-	echo 'Could not find shim script "docker.hyperkit.tuntap.sh"'
-	exit 1
-fi
+function find_hyperkit(){
+        local possible_locations=$(
+                for loc in ${LOCATIONS[@]};
+                do
+                        echo $loc
+                        echo $HOME$loc
+                done)
+        for loc in $possible_locations;
+        do
+                check_file $loc && echo $loc && break
+        done
+        echo
+}
 
-# Find docker hyperkit binary file
-hyperkitPath=false
-for possibleLocation in $(echo '
-	/Applications/Docker.app/Contents/MacOS/com.docker.hyperkit
-	/Applications/Docker.app/Contents/Resources/bin/com.docker.hyperkit
-	/Applications/Docker.app/Contents/Resources/bin/hyperkit
-'); do
-	if [ -f "$possibleLocation" ]; then
-		hyperkitPath=$possibleLocation
-		break;
-    elif [ -f "$HOME$possibleLocation" ]; then
-		hyperkitPath=$HOME$possibleLocation
-		break;
-	fi
-done
+function restart_hyperkit(){
+        echo "Restarting docker..."
 
-if [ "$hyperkitPath" = false ]; then
-	echo 'Could not find hyperkit executable' >&2
-	exit 1
-fi
+        osascript -e 'quit app "Docker"'
+        open --background -a Docker
 
-# Take note of the docker daemon process
-# NOTE: in some instances docker will automatically restart
-# after the below step, so we take note of it a bit earlier
-processID=false
-processName=false
-for possibleName in $POSSIBLE_PROCESS_NAMES; do
-	if pgrep -q $possibleName; then
-		processID=$(pgrep $possibleName)
-		processName=$possibleName
-		break;
-	fi
-done
+        echo "Waiting for docker to be alive..."
 
-if [ "$processName" = false ]; then
-	echo 'Could not find hyperkit process to kill, make sure docker is running' >&2
-	exit 1;
-fi
+        while true;
+        do
+                docker version > /dev/null 2>&1 && break || sleep 1
+        done
+        echo "Done."
+}
 
-# Check if we have already been installed with the current version
-if file "$hyperkitPath" | grep -q 'executable, ASCII text$'; then
-	if cmp -s "$shimPath" "$hyperkitPath"; then
-		echo 'Already installed';
-		if ! echo $@ | grep -q '\-f'; then
-			echo 'Use "-f" argument if you want to restart hyperkit anyway'
-			exit 0
-		fi
-	else
-		timestamp=$(date +%Y%m%d_%H%M%S)
-		mv "$hyperkitPath" "${hyperkitPath}.${timestamp}"
-		cp "$shimPath" "$hyperkitPath"
-		echo 'Updated existing installation'
-	fi
-elif file "$hyperkitPath" | grep -q 'Mach-O.*executable'; then
-	mv "$hyperkitPath" "${hyperkitPath}.original"
-	cp "$shimPath" "$hyperkitPath"
-	echo 'Installation complete'
-else
-	echo 'The hyperkit executable file was of an unknown type' >&1
-	exit 1
-fi
+function replace_hyperkit(){
+        check_file $SHIM_FILE || err "Failed to find shim script: $SHIM_FILE"
 
-# Restarting docker
-echo "Restarting process '$processName' [$processID]"
-pkill "$processName"
+        local hyperkit_file=$(find_hyperkit)
+        check_file $hyperkit_file || err "Failed to find hyperkit file"
 
-# Wait for process to come back online
-count=0
-while true; do
-	sleep 1;
+        cmp -s $SHIM_FILE $hyperkit_file \
+                && echo "Already installed to $hyperkit_file" \
+                && return 0
 
-	newProcessID=false
-	for possibleName in $POSSIBLE_PROCESS_NAMES; do
-		if pgrep -q $possibleName; then
-			newProcessID=$(pgrep $possibleName)
-			break;
-		fi
-	done
+        echo "Replacing hyperkit executable"
+        cp $hyperkit_file "${hyperkit_file}.bak.$(date +%Y%m%d_%H%M%S)"
+        mv $hyperkit_file "${hyperkit_file}.original"
+        cp $SHIM_FILE $hyperkit_file
+}
 
-	if [ "$newProcessID" != false ] && [ "$newProcessID" != "$processID" ]; then
-		break;
-	fi
+function update_tap_ownership() {
+        check_file $TAP_IFACE || err "Failed to find tap device: $TAP_IFACE"
 
-	count=$(($count + 1))
-	if [ $count -gt 60 ]; then
-		echo "Failed to restart process '$processName'"
-		exit 1
-	fi
-done
+        ifconfig $TAP_ID > /dev/null 2>&1 && return 0
 
-# All done!
-echo 'Process restarted, ready to go'
+        echo "Updating owner of $TAP_IFACE to $USER"
+        sudo chown $USER $TAP_IFACE
+
+        ask "Restart docker?" restart_hyperkit
+}
+
+function setup_docker_network(){
+        local container_tap_iface=eth1
+        local host_gw="10.0.75.1/24"
+        local container_gw="10.0.75.2"
+        local container_netmask="255.255.255.252"
+
+        echo "Configuring host interface..."
+        sudo ifconfig $TAP_ID $host_gw up || err "Failed to setup host interface: $TAP_ID"
+
+        echo "Configuring docker interface..."
+        docker run --rm --privileged --net=host --pid=host alpine \
+                ifconfig $container_tap_iface $container_gw netmask $container_netmask up \
+                || err "Failed to setup docker network interface"
+
+        setup_docker_subnets $container_gw
+}
+
+function setup_docker_subnets(){
+        local gw=$1
+        local subnets=$(docker network inspect -f "{{range .IPAM.Config}}{{.Subnet}}{{end}}" \
+                        $(docker network ls -f driver=bridge -q))
+
+        for subnet in $subnets;
+        do
+                echo "Adding route for $subnet via $gw"
+                sudo route add $subnet $gw
+        echo
+        done
+}
+
+function main(){
+
+        replace_hyperkit || err "Failed to replace hyperkit"
+        update_tap_ownership || err "Failed to update tap interface ownership"
+        setup_docker_network
+}
+
+main
+

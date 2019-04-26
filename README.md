@@ -45,10 +45,7 @@ To install it, run the shim installer script. This will automatically check if t
 ./sbin/docker_tap_install.sh
 ```
 
-After this you will need to bring up the network interfaces every time the docker Host Virtual Machine is restarted:
-```
-./sbin/docker_tap_up.sh
-```
+This script should be ran every time when docker is restarted.
 
 How to remove it
 ----------------
